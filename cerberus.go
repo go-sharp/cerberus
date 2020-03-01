@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/go-sharp/windows/pkg/ps"
 )
 
 const (
@@ -282,7 +284,7 @@ loop:
 			case svc.Shutdown, svc.Stop:
 				changes <- svc.Status{State: svc.StopPending}
 				c.log.Info(1, "Received shutdown command, shutting down...")
-				cmd.Process.Kill()
+				ps.KillChildProcesses(uint32(cmd.Process.Pid), true)
 				<-done
 				break loop
 			default:
