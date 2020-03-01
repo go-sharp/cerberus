@@ -81,12 +81,13 @@ func (r *RunCommand) Execute(args []string) (err error) {
 // InstallCommand used to install a binary as service.
 type InstallCommand struct {
 	RootCommand
-	ExePath     string   `long:"executable" short:"e" description:"Full path to the executable" required:"true"`
+	ExePath     string   `long:"executable" short:"x" description:"Full path to the executable" required:"true"`
 	WorkDir     string   `long:"workdir" short:"w" description:"Working directory of the executable, if not specified the folder of the executable is used."`
 	Name        string   `long:"name" short:"n" description:"Name of the service, if not specified name of the executable is used."`
 	DisplayName string   `long:"display-name" short:"i" description:"Display name of the service, if not specified name of the executable is used."`
 	Desc        string   `long:"desc" short:"d" description:"Description of the service"`
 	Args        []string `long:"arg" short:"a" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
+	Env         []string `long:"env" short:"e" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
 }
 
 // Execute will install a binary as service. The args parameter is not used
@@ -109,6 +110,7 @@ func (i *InstallCommand) Execute(args []string) (err error) {
 		Name:    i.Name,
 		WorkDir: i.WorkDir,
 		Args:    i.Args,
+		Env:     i.Env,
 	}
 
 	i.logDebug("Creating configuration file...")
@@ -241,6 +243,7 @@ type SvcConfig struct {
 	ExePath     string   `json:"exe_path,omitempty"`
 	WorkDir     string   `json:"work_dir,omitempty"`
 	Args        []string `json:"args,omitempty"`
+	Env         []string `json:"env,omitempty"`
 	WaitTimeout int      `json:"wait_timeout,omitempty"`
 }
 
@@ -252,7 +255,7 @@ type cerberusSvc struct {
 // Execute will be called when the service is started.
 func (c *cerberusSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (svcSpecificEC bool, exitCode uint32) {
 	changes <- svc.Status{State: svc.StartPending}
-	cmd := exec.Cmd{Path: c.cfg.ExePath, Dir: c.cfg.WorkDir, Args: c.cfg.Args}
+	cmd := exec.Cmd{Path: c.cfg.ExePath, Dir: c.cfg.WorkDir, Args: c.cfg.Args, Env: append(os.Environ(), c.cfg.Env...)}
 	if err := cmd.Start(); err != nil {
 		c.log.Error(2, fmt.Sprintf("Failed to start service: %v", err))
 		return false, 2
