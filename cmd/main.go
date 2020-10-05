@@ -8,7 +8,7 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
-const version = "1.0.0"
+const version = "1.0.1"
 
 var installCommand cerberus.InstallCommand
 var runCommand cerberus.RunCommand

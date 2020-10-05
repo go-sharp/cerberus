@@ -156,6 +156,16 @@ func (i *InstallCommand) checkAndConfigureArgs() error {
 		}
 	}
 
+	if len(i.Args) > 0 {
+		i.logDebug("Removing leading/trailing quotes from arguments...")
+		for j := range i.Args {
+			n := len(i.Args[j]) - 1
+			if i.Args[j][0] == '\'' && i.Args[j][n] == '\'' {
+				i.Args[j] = i.Args[j][1:n]
+			}
+		}
+	}
+
 	if i.DisplayName == "" {
 		i.logDebug("Creating a display name..")
 		i.DisplayName = i.Name
@@ -255,7 +265,7 @@ type cerberusSvc struct {
 // Execute will be called when the service is started.
 func (c *cerberusSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (svcSpecificEC bool, exitCode uint32) {
 	changes <- svc.Status{State: svc.StartPending}
-	cmd := exec.Cmd{Path: c.cfg.ExePath, Dir: c.cfg.WorkDir, Args: c.cfg.Args, Env: append(os.Environ(), c.cfg.Env...)}
+	cmd := exec.Cmd{Path: c.cfg.ExePath, Dir: c.cfg.WorkDir, Args: append([]string{c.cfg.ExePath}, c.cfg.Args...), Env: append(os.Environ(), c.cfg.Env...)}
 	if err := cmd.Start(); err != nil {
 		c.log.Error(2, fmt.Sprintf("Failed to start service: %v", err))
 		return false, 2
@@ -275,7 +285,7 @@ loop:
 		select {
 		case err := <-done:
 			if err != nil {
-				c.log.Error(3, fmt.Sprintf("Executable exited with error: %v", err))
+				c.log.Error(3, fmt.Sprintf("Executable '%v' exited with error: %v", c.cfg.ExePath, err))
 				exitCode = 3
 			}
 			break loop
