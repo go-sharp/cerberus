@@ -1,70 +1,134 @@
 package cerberus
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/jessevdk/go-flags"
+	"github.com/go-sharp/windows/pkg/ps"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
-
-	"github.com/go-sharp/windows/pkg/ps"
 )
 
-const (
-	configFilePath  = "cerberus.svc"
-	genericCredName = "cerberus-svc-verification-key"
-)
+// DebugLogger logs all debug information, per default
+// ioutil.Discard is used and no output is generated.
+var DebugLogger = log.New(ioutil.Discard, "Cerberus: ", 0)
 
-// RootCommand used for all subcommands
-type RootCommand struct {
-	Verbose bool `long:"verbose" short:"v" description:"Verbose output"`
-}
+// Logger is the default logger for cerberus.
+// Per default os.Stdout is used.
+var Logger = log.New(os.Stdout, "Cerberus: ", 0)
 
-func (r RootCommand) logDebug(format string, a ...interface{}) {
-	if r.Verbose {
-		r.log(format, a...)
+// InstallService installs a windows service with the given configuration.
+func InstallService(config SvcConfig) error {
+	DebugLogger.Println("Open connection to service control manager...")
+	manager, err := mgr.Connect()
+	if err != nil {
+		return newError(ErrInstallService, "failed to connect to service control manager: %v", err)
 	}
+	defer manager.Disconnect()
+
+	// Ensure all required properties are set and valid.
+	if err := checkAndConfigureCfg(&config); err != nil {
+		return err
+	}
+
+	Logger.Printf("Installing service %v...\n", config.Name)
+
+	DebugLogger.Printf("Creating service %v...\n", config.Name)
+	cerberusPath, _ := filepath.Abs(os.Args[0]) // Consideration: pass it as argument could be a better solution
+	s, err := manager.CreateService(config.Name, cerberusPath, mgr.Config{DisplayName: config.DisplayName, Description: config.Desc}, "run", config.Name)
+	if err != nil {
+		return newErrorW(ErrInstallService, "failed to create service", err)
+	}
+	defer s.Close()
+
+	DebugLogger.Printf("Creating eventlog %v...\n", config.Name)
+	if err := eventlog.InstallAsEventCreate(config.Name, eventlog.Error|eventlog.Info|eventlog.Warning); err != nil {
+		s.Delete()
+		return newErrorW(ErrInstallService, "failed to create eventlog %v", err, config.Name)
+	}
+
+	DebugLogger.Println("Creating configuration file...")
+	if err := SaveServiceCfg(config); err != nil {
+		s.Delete()
+		eventlog.Remove(config.Name)
+		return newErrorW(ErrInstallService, "failed to write config file", err)
+	}
+
+	Logger.Printf("Successfully installed service %v...\n", config.Name)
+	return nil
 }
 
-func (r RootCommand) log(format string, a ...interface{}) {
-	fmt.Printf("Cerberus: "+format+"\n", a...)
+// RemoveService removes the service with the given name.
+func RemoveService(name string) error {
+	DebugLogger.Println("Open connection to service control manager...")
+	manager, err := mgr.Connect()
+	if err != nil {
+		return newErrorW(ErrRemoveService, "failed to connect to service control manager", err)
+	}
+	defer manager.Disconnect()
+
+	DebugLogger.Println("Loading configuration...")
+	config, err := LoadServiceCfg(name)
+	if err != nil {
+		return err
+	}
+
+	DebugLogger.Printf("Open service %v...\n", config.Name)
+	s, err := manager.OpenService(config.Name)
+	if err != nil {
+		return newErrorW(ErrRemoveService, "failed to open service", err)
+	}
+	defer s.Close()
+
+	Logger.Printf("Removing service %v...\n", config.Name)
+	DebugLogger.Printf("Mark service %v for deletion...", config.Name)
+	if err := s.Delete(); err != nil {
+		return newErrorW(ErrRemoveService, "failed to remove service %v", err, config.Name)
+	}
+
+	DebugLogger.Printf("Removing eventlog %v...\n", config.Name)
+	if err := eventlog.Remove(config.Name); err != nil {
+		Logger.Printf("failed to remove eventlog, you might to try to remove it manually: %v\n", err)
+	}
+
+	if err := RemoveServiceCfg(config.Name); err != nil {
+		Logger.Printf("Failed to remove configuration, you might try to remove it manually: %v\n", err)
+	}
+
+	Logger.Printf("Successfully removed service %v...\n", config.Name)
+	return nil
 }
 
-// RunCommand runs the configured service directly.
-type RunCommand struct {
-	RootCommand
-}
-
-// Execute will run the service handler.
-func (r *RunCommand) Execute(args []string) (err error) {
+// RunService runs the service with the given name.
+func RunService(name string) error {
 	isIntSess, err := svc.IsAnInteractiveSession()
 	if err != nil {
-		return fmt.Errorf("Cerberus: failed to determine if session is interactive: %v", err)
+		return newErrorW(ErrGeneric, "failed to determine if session is interactive", err)
 	}
 
-	r.logDebug("Loading service configuration...")
-	svcCfg, err := loadServiceConfig()
+	DebugLogger.Println("Loading service configuration...")
+	svcCfg, err := LoadServiceCfg(name)
 	if err != nil {
-		return fmt.Errorf("Cerberus: failed to load service configuration: %v", err)
+		return err
 	}
 
 	run := svc.Run
-	cerb := cerberusSvc{cfg: svcCfg}
+	cerb := cerberusSvc{cfg: *svcCfg}
 	if isIntSess {
 		cerb.log = debug.New(svcCfg.Name)
 		run = debug.Run
 	} else {
 		cerb.log, err = eventlog.Open(svcCfg.Name)
 		if err != nil {
-			return fmt.Errorf("Cerberus: failed to open service eventlog: %v", err)
+			return newErrorW(ErrRunService, "failed to open serivce eventlog", err)
 		}
 	}
 	defer cerb.log.Close()
@@ -78,183 +142,61 @@ func (r *RunCommand) Execute(args []string) (err error) {
 	return nil
 }
 
-// InstallCommand used to install a binary as service.
-type InstallCommand struct {
-	RootCommand
-	ExePath     string   `long:"executable" short:"x" description:"Full path to the executable" required:"true"`
-	WorkDir     string   `long:"workdir" short:"w" description:"Working directory of the executable, if not specified the folder of the executable is used."`
-	Name        string   `long:"name" short:"n" description:"Name of the service, if not specified name of the executable is used."`
-	DisplayName string   `long:"display-name" short:"i" description:"Display name of the service, if not specified name of the executable is used."`
-	Desc        string   `long:"desc" short:"d" description:"Description of the service"`
-	Args        []string `long:"arg" short:"a" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
-	Env         []string `long:"env" short:"e" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
-}
-
-// Execute will install a binary as service. The args parameter is not used
-// and is only to fullfil the go-flags commander interface.
-func (i *InstallCommand) Execute(args []string) (err error) {
-	i.logDebug("Open connection to service control manager...")
-	manager, err := mgr.Connect()
-	if err != nil {
-		return fmt.Errorf("Cerberus: failed to connect to service control manager: %v", err)
-	}
-	defer manager.Disconnect()
-
-	if err := i.checkAndConfigureArgs(); err != nil {
-		return err
-	}
-
-	i.log("Installing service %v...", i.Name)
-	svcCfg := SvcConfig{
-		ExePath: i.ExePath,
-		Name:    i.Name,
-		WorkDir: i.WorkDir,
-		Args:    i.Args,
-		Env:     i.Env,
-	}
-
-	i.logDebug("Creating configuration file...")
-	if err := saveServiceConfig(svcCfg); err != nil {
-		return fmt.Errorf("Cerberus: failed to write config file: %v", err)
-	}
-
-	i.logDebug("Creating service %v...", i.Name)
-	cerberusPath, _ := filepath.Abs(os.Args[0])
-	s, err := manager.CreateService(i.Name, cerberusPath, mgr.Config{DisplayName: i.DisplayName, Description: i.Desc}, "run")
-	if err != nil {
-		removeServiceConfig()
-		return fmt.Errorf("Cerberus: failed to create service: %v", err)
-	}
-	defer s.Close()
-
-	i.logDebug("Creating eventlog %v...", i.Name)
-	if err := eventlog.InstallAsEventCreate(i.Name, eventlog.Error|eventlog.Info|eventlog.Warning); err != nil {
-		s.Delete()
-		removeServiceConfig()
-		return fmt.Errorf("Cerberus: failed to create eventlog %v: %v", i.Name, err)
-	}
-
-	i.log("Successfully installed service %v...", i.Name)
-	return nil
-}
-
-func (i *InstallCommand) checkAndConfigureArgs() error {
-	i.logDebug("Creating absolute path for ExePath...")
+func checkAndConfigureCfg(cfg *SvcConfig) error {
+	DebugLogger.Println("Creating absolute path for ExePath...")
 	var err error
-	i.ExePath, err = filepath.Abs(i.ExePath)
+	cfg.ExePath, err = filepath.Abs(cfg.ExePath)
 	if err != nil {
-		return fmt.Errorf("Cerberus: failed to get absolute path: %v", err)
+		return newErrorW(ErrInstallService, "failed to get absolute path", err)
 	}
 
-	if i.Name == "" {
-		i.logDebug("Creating a service name...")
-		i.Name = filepath.Base(i.ExePath)
-		if idx := strings.LastIndex(i.Name, "."); idx == 0 {
-			return fmt.Errorf("Cerberus: invalid service name %v", i.Name)
+	if cfg.Name == "" {
+		DebugLogger.Println("Creating a service name...")
+		cfg.Name = filepath.Base(cfg.ExePath)
+		if idx := strings.LastIndex(cfg.Name, "."); idx == 0 {
+			return newError(ErrInstallService, "invalid service name %v", cfg.Name)
 		} else if idx > 0 {
-			i.Name = i.Name[:idx]
+			cfg.Name = cfg.Name[:idx]
 		}
 	}
 
-	if len(i.Args) > 0 {
-		i.logDebug("Removing leading/trailing quotes from arguments...")
-		for j := range i.Args {
-			n := len(i.Args[j]) - 1
-			if i.Args[j][0] == '\'' && i.Args[j][n] == '\'' {
-				i.Args[j] = i.Args[j][1:n]
+	DebugLogger.Println("Loading configuration...")
+	if _, err := LoadServiceCfg(cfg.Name); err == nil {
+		return newError(ErrInstallService, " already a service (%v) installed, try to remove it first", cfg.Name)
+	}
+
+	if len(cfg.Args) > 0 {
+		DebugLogger.Println("Removing leading/trailing quotes from arguments...")
+		for j := range cfg.Args {
+			n := len(cfg.Args[j]) - 1
+			if cfg.Args[j][0] == '\'' && cfg.Args[j][n] == '\'' {
+				cfg.Args[j] = cfg.Args[j][1:n]
 			}
 		}
 	}
 
-	if i.DisplayName == "" {
-		i.logDebug("Creating a display name..")
-		i.DisplayName = i.Name
+	if cfg.DisplayName == "" {
+		DebugLogger.Println("Creating a display name..")
+		cfg.DisplayName = cfg.Name
 	}
 
-	if i.WorkDir == "" {
-		i.logDebug("Setting working directory..")
-		i.WorkDir = filepath.Dir(i.ExePath)
-	}
-
-	i.logDebug("Loading configuration file...")
-	if cfg, err := loadServiceConfig(); err == nil {
-		return fmt.Errorf("Cerberus: already a service (%v) installed, try to remove it first", cfg.Name)
+	if cfg.WorkDir == "" {
+		DebugLogger.Println("Setting working directory..")
+		cfg.WorkDir = filepath.Dir(cfg.ExePath)
 	}
 
 	return nil
-}
-
-// RemoveCommand used to remove a service.
-type RemoveCommand struct {
-	RootCommand
-	Name string `long:"name" short:"n" description:"Try to remove service by name"`
-}
-
-// Execute will remove an installed service. The args parameter is not used
-// and is only to fullfil the go-flags commander interface.
-func (r *RemoveCommand) Execute(args []string) error {
-	r.logDebug("Open connection to service control manager...")
-	manager, err := mgr.Connect()
-	if err != nil {
-		return fmt.Errorf("Cerberus: failed to connect to service control manager: %v", err)
-	}
-	defer manager.Disconnect()
-
-	if r.Name == "" {
-		r.logDebug("Loading configuration file...")
-		config, err := loadServiceConfig()
-		if err != nil {
-			return fmt.Errorf("Cerberus: failed to load configuration file, you might try to use the name parameter: %v", err)
-		}
-		r.Name = config.Name
-	}
-
-	s, err := manager.OpenService(r.Name)
-	if err != nil {
-		return fmt.Errorf("Cerberus: failed to open service: %v", err)
-	}
-	defer s.Close()
-
-	r.log("Removing service %v...", r.Name)
-	r.logDebug("Mark service %v for deletion...", r.Name)
-	if err := s.Delete(); err != nil {
-		return fmt.Errorf("Cerberus: failed to remove service %v: %v", r.Name, err)
-	}
-
-	r.logDebug("Removing eventlog %v...", r.Name)
-	if err := eventlog.Remove(r.Name); err != nil {
-		return fmt.Errorf("Cerberus: failed to remove eventlog %v: %v", r.Name, err)
-	}
-
-	if err := removeServiceConfig(); err != nil {
-		r.log("Failed to remove config file, you might try to remove it manually: %v", err)
-	}
-
-	r.log("Successfully removed service %v...", r.Name)
-	return nil
-}
-
-// CommandFunc takes a function and wraps into a type which implements the commander interface.
-func CommandFunc(f func(args []string) error) flags.Commander {
-	return &funcCommand{fn: f}
-}
-
-type funcCommand struct {
-	fn func(args []string) error
-}
-
-func (c funcCommand) Execute(args []string) error {
-	return c.fn(args)
 }
 
 // SvcConfig is the data required run the executable as a service.
 type SvcConfig struct {
-	Name        string   `json:"name,omitempty"`
-	ExePath     string   `json:"exe_path,omitempty"`
-	WorkDir     string   `json:"work_dir,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Env         []string `json:"env,omitempty"`
-	WaitTimeout int      `json:"wait_timeout,omitempty"`
+	Name        string
+	Desc        string
+	DisplayName string
+	ExePath     string
+	WorkDir     string
+	Args        []string
+	Env         []string
 }
 
 type cerberusSvc struct {
@@ -311,30 +253,128 @@ loop:
 	return
 }
 
-func loadServiceConfig() (config SvcConfig, err error) {
-	base, _ := filepath.Abs(os.Args[0])
-	data, err := ioutil.ReadFile(filepath.Join(filepath.Dir(base), configFilePath))
-	if err != nil {
-		return config, err
+const swRegBaseKey = "SOFTWARE\\go-sharp\\cerberus"
+
+// RemoveServiceCfg removes the service configuration form the cerberus service db.
+// It returns a generic error if call fails.
+func RemoveServiceCfg(name string) error {
+	if name == "" {
+		return newError(ErrGeneric, "empty service name is not allowed")
 	}
 
-	err = json.Unmarshal(data, &config)
-	return config, err
-}
-
-func removeServiceConfig() error {
-	base, _ := filepath.Abs(os.Args[0])
-	if err := os.Remove(filepath.Join(filepath.Dir(base), configFilePath)); err != nil {
-		return err
+	if err := registry.DeleteKey(registry.LOCAL_MACHINE, swRegBaseKey+"\\"+name); err != nil {
+		return newErrorW(ErrGeneric, "failed to remove service entry for service '%v'", err, name)
 	}
+
 	return nil
 }
 
-func saveServiceConfig(config SvcConfig) error {
-	data, err := json.Marshal(config)
+// LoadServicesCfg loads all configured services.
+func LoadServicesCfg() (svcs []*SvcConfig, err error) {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, swRegBaseKey, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
-		return err
+		return nil, newError(ErrLoadServiceCfg, "couldn't find any services")
 	}
-	base, _ := filepath.Abs(os.Args[0])
-	return ioutil.WriteFile(filepath.Join(filepath.Dir(base), configFilePath), data, 0644)
+
+	services, err := key.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read services", err)
+	}
+
+	for i := range services {
+		if c, err := LoadServiceCfg(services[i]); err == nil {
+			svcs = append(svcs, c)
+		} else {
+			DebugLogger.Println("skipping item", services[i], ":", err)
+		}
+	}
+
+	return svcs, nil
+}
+
+// LoadServiceCfg loads a service configuration for a given service
+// from the cerberus service db.
+func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
+	if name == "" {
+		return nil, newError(ErrLoadServiceCfg, "empty service name is not allowed")
+	}
+
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, swRegBaseKey+"\\"+name, registry.QUERY_VALUE)
+	if err != nil {
+		return nil, newError(ErrLoadServiceCfg, "couldn't find service '%v'", name)
+	}
+
+	cfg = &SvcConfig{}
+
+	if cfg.Name, _, err = key.GetStringValue("Name"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read name", err)
+	}
+
+	if cfg.Desc, _, err = key.GetStringValue("Desc"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read description", err)
+	}
+
+	if cfg.DisplayName, _, err = key.GetStringValue("DisplayName"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read display name", err)
+	}
+
+	if cfg.ExePath, _, err = key.GetStringValue("ExePath"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read exectuable path", err)
+	}
+
+	if cfg.WorkDir, _, err = key.GetStringValue("WorkDir"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read workdir", err)
+	}
+
+	if cfg.Args, _, err = key.GetStringsValue("Args"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read arguments", err)
+	}
+
+	if cfg.Env, _, err = key.GetStringsValue("Env"); err != nil {
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read environment vars", err)
+	}
+
+	return cfg, nil
+}
+
+// SaveServiceCfg saves a given configuration in the cerberus service db.
+func SaveServiceCfg(config SvcConfig) error {
+	if config.Name == "" {
+		return newError(ErrSaveServiceCfg, "empty service name is not allowed")
+	}
+
+	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, swRegBaseKey+"\\"+config.Name, registry.CREATE_SUB_KEY|registry.WRITE)
+	if err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to create registry entry", err)
+	}
+
+	if err := key.SetStringValue("Name", config.Name); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set name", err)
+	}
+
+	if err := key.SetStringValue("Desc", config.Desc); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set description", err)
+	}
+
+	if err := key.SetStringValue("DisplayName", config.DisplayName); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set display name", err)
+	}
+
+	if err := key.SetStringValue("ExePath", config.ExePath); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set exectuable path", err)
+	}
+
+	if err := key.SetStringValue("WorkDir", config.WorkDir); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set workdir", err)
+	}
+
+	if err := key.SetStringsValue("Args", config.Args); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set arguments", err)
+	}
+
+	if err := key.SetStringsValue("Env", config.Env); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set environment vars", err)
+	}
+
+	return nil
 }
