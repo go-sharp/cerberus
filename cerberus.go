@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-sharp/windows/pkg/ps"
 	"golang.org/x/sys/windows/registry"
@@ -67,6 +68,7 @@ func InstallService(config SvcConfig) error {
 }
 
 // RemoveService removes the service with the given name.
+// Stops the service first, can return a timeout error if it can't stop the service.
 func RemoveService(name string) error {
 	DebugLogger.Println("Open connection to service control manager...")
 	manager, err := mgr.Connect()
@@ -87,6 +89,19 @@ func RemoveService(name string) error {
 		return newErrorW(ErrRemoveService, "failed to open service", err)
 	}
 	defer s.Close()
+
+	DebugLogger.Printf("Stopping service %v...\n", config.Name)
+	s.Control(svc.Stop)
+	timeout := time.Now().Add(30 * time.Second)
+	state, _ := s.Query()
+	for state.State != svc.Stopped {
+		if time.Now().After(timeout) {
+			return newError(ErrTimeout, "failed to stop service")
+		}
+
+		time.Sleep(200 * time.Millisecond)
+		state, _ = s.Query()
+	}
 
 	Logger.Printf("Removing service %v...\n", config.Name)
 	DebugLogger.Printf("Mark service %v for deletion...", config.Name)
@@ -253,7 +268,7 @@ loop:
 	return
 }
 
-const swRegBaseKey = "SOFTWARE\\go-sharp\\cerberus"
+const swRegBaseKey = "SOFTWARE\\go-sharp\\cerberus\\services"
 
 // RemoveServiceCfg removes the service configuration form the cerberus service db.
 // It returns a generic error if call fails.

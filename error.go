@@ -22,10 +22,11 @@ const (
 	ErrRemoveService
 	// ErrRunService indicates error while running a service.
 	ErrRunService
+	// ErrTimeout indicates an action run into a timeout.
+	ErrTimeout
 )
 
 var errorMap = map[ErrorCode]string{
-	ErrGeneric:        "",
 	ErrSaveServiceCfg: "SaveServiceCfg",
 	ErrLoadServiceCfg: "LoadServiceCfg",
 	ErrInstallService: "InstallService",
@@ -61,7 +62,11 @@ func (e Error) Unwrap(err error) error {
 
 // Error implements the error interface.
 func (e Error) Error() string {
-	err := fmt.Sprintf("%v: %v", errorMap[e.Code], e.Message)
+	err := e.Message
+	if v, ok := errorMap[e.Code]; ok && v != "" {
+		err = fmt.Sprintf("(%v) %v", v, e.Message)
+	}
+
 	if e.nestedErr != nil {
 		err = fmt.Sprintf("%v: %v", err, e.nestedErr)
 	}

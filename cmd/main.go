@@ -86,10 +86,18 @@ func (r *ListCommand) Execute(args []string) (err error) {
 		cerberus.DebugLogger.Fatalln(err)
 	}
 
+	fmt.Printf("\nCerberus installed services:\n")
+	fmt.Println(strings.Repeat("-", 80))
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "\nName\tDisplay Name\tDescription\tWorking Dir\tArgs\tEnvironment\n")
 	for _, s := range svcs {
-		fmt.Fprintf(w, "%v\t%v\t%v\t%v\t%v\t%v\n", s.Name, s.DisplayName, s.Desc, s.WorkDir, strings.Join(s.Args, " "), strings.Join(s.Env, " "))
+		fmt.Fprintf(w, "Name:\t%v\n", s.Name)
+		fmt.Fprintf(w, "Display Name:\t%v\n", s.DisplayName)
+		fmt.Fprintf(w, "Description:\t%v\n", s.Desc)
+		fmt.Fprintf(w, "Executable Path:\t%v\n", s.ExePath)
+		fmt.Fprintf(w, "Working Directory:\t%v\n", s.WorkDir)
+		fmt.Fprintf(w, "Arguments:\t%v\n", strings.Join(s.Args, " "))
+		fmt.Fprintf(w, "Environment Variables:\t%v\n", strings.Join(s.Env, " "))
+		fmt.Fprintf(w, "%v\n", strings.Repeat("-", 80))
 	}
 	w.Flush()
 
@@ -135,7 +143,9 @@ func (i *InstallCommand) Execute(args []string) (err error) {
 // RemoveCommand used to remove a service.
 type RemoveCommand struct {
 	RootCommand
-	Name string `long:"name" short:"n" description:"Try to remove service by name" required:"yes"`
+	Args struct {
+		Name string `positional-arg-name:"SERVICE_NAME" description:"Name of the service to remove." required:"yes"`
+	} `positional-args:"yes" required:"1"`
 }
 
 // Execute will remove an installed service. The args parameter is not used
@@ -145,7 +155,7 @@ func (r *RemoveCommand) Execute(args []string) error {
 		cerberus.Logger.Fatalln(err)
 	}
 
-	if err := cerberus.RemoveService(r.Name); err != nil {
+	if err := cerberus.RemoveService(r.Args.Name); err != nil {
 		cerberus.Logger.Fatalln(err)
 	}
 
@@ -156,7 +166,7 @@ func (r *RemoveCommand) Execute(args []string) error {
 type RunCommand struct {
 	RootCommand
 	Args struct {
-		Name string `positional-arg-name:"SERVICE_NAME" description:"Name of the service to remove."`
+		Name string `positional-arg-name:"SERVICE_NAME" description:"Name of the service to run."`
 	} `positional-args:"yes" required:"1"`
 }
 
