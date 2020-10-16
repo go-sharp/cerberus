@@ -1,4 +1,4 @@
-module github.com/go-sharp/cerberus
+module github.com/go-sharp/cerberus/v2
 
 go 1.13
 

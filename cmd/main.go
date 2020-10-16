@@ -6,11 +6,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/go-sharp/cerberus"
+	"github.com/go-sharp/cerberus/v2"
 	"github.com/jessevdk/go-flags"
 )
 
-const version = "2.0.0"
+const version = "2.0.1"
 
 var installCommand InstallCommand
 var runCommand RunCommand
