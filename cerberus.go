@@ -1,16 +1,16 @@
 package cerberus
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/go-sharp/windows/pkg/ps"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
@@ -35,8 +35,12 @@ func InstallService(config SvcConfig) error {
 	}
 	defer manager.Disconnect()
 
-	// Ensure all required properties are set and valid.
-	if err := checkAndConfigureCfg(&config); err != nil {
+	// Ensure all required properties are initalized.
+	if err := initConfiguration(&config); err != nil {
+		return err
+	}
+	// Validate all properties
+	if err := validateConfiguration(&config); err != nil {
 		return err
 	}
 
@@ -56,14 +60,52 @@ func InstallService(config SvcConfig) error {
 		return newErrorW(ErrInstallService, "failed to create eventlog %v", err, config.Name)
 	}
 
-	DebugLogger.Println("Creating configuration file...")
-	if err := SaveServiceCfg(config); err != nil {
+	DebugLogger.Println("Write service configuration...")
+	if err := saveServiceCfg(config); err != nil {
 		s.Delete()
 		eventlog.Remove(config.Name)
-		return newErrorW(ErrInstallService, "failed to write config file", err)
+		return newErrorW(ErrSaveServiceCfg, "failed to write config", err)
 	}
 
 	Logger.Printf("Successfully installed service %v...\n", config.Name)
+	return nil
+}
+
+// UpdateService updates a cerberus service with the given configuration.
+func UpdateService(config SvcConfig) error {
+	DebugLogger.Println("Open connection to service control manager...")
+	manager, err := mgr.Connect()
+	if err != nil {
+		return newError(ErrUpdateService, "failed to connect to service control manager: %v", err)
+	}
+	defer manager.Disconnect()
+
+	DebugLogger.Println("Loading configuration...")
+	currentSvc, err := LoadServiceCfg(config.Name)
+	if err != nil {
+		return err
+	}
+
+	Logger.Printf("Updating service %v...\n", config.Name)
+	trimArgs(config.Args)
+	currentSvc.Args = config.Args
+	currentSvc.Desc = config.Desc
+	currentSvc.DisplayName = config.DisplayName
+	currentSvc.Env = config.Env
+	currentSvc.RecoveryActions = config.RecoveryActions
+	currentSvc.WorkDir = config.WorkDir
+
+	// Validate all properties
+	if err := validateConfiguration(&config); err != nil {
+		return err
+	}
+
+	DebugLogger.Println("Write service configuration...")
+	if err := saveServiceCfg(config); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to write config", err)
+	}
+
+	Logger.Printf("Successfully updated service %v...\n", config.Name)
 	return nil
 }
 
@@ -157,7 +199,35 @@ func RunService(name string) error {
 	return nil
 }
 
-func checkAndConfigureCfg(cfg *SvcConfig) error {
+func validateConfiguration(cfg *SvcConfig) error {
+	DebugLogger.Println("Validating configuration...")
+	if cfg.Name == "" {
+		return newError(ErrInvalidConfiguration, "service name can't be empty")
+	}
+
+	if cfg.ExePath == "" {
+		return newError(ErrInvalidConfiguration, "executable path can't be empty")
+	}
+
+	if fi, err := os.Stat(cfg.ExePath); err != nil || fi.IsDir() {
+		return newErrorW(ErrInvalidConfiguration, "executable path isn't a binary file", err)
+	}
+
+	for _, action := range cfg.RecoveryActions {
+		if (action.Action & RunProgramAction) == RunProgramAction {
+			if action.Program == "" {
+				return newError(ErrInvalidConfiguration, "recovery action program path can't be empty")
+			}
+			if fi, err := os.Stat(action.Program); err != nil || fi.IsDir() {
+				return newErrorW(ErrInvalidConfiguration, "recovery action program path isn't a binary file", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func initConfiguration(cfg *SvcConfig) error {
 	DebugLogger.Println("Creating absolute path for ExePath...")
 	var err error
 	cfg.ExePath, err = filepath.Abs(cfg.ExePath)
@@ -180,15 +250,7 @@ func checkAndConfigureCfg(cfg *SvcConfig) error {
 		return newError(ErrInstallService, " already a service (%v) installed, try to remove it first", cfg.Name)
 	}
 
-	if len(cfg.Args) > 0 {
-		DebugLogger.Println("Removing leading/trailing quotes from arguments...")
-		for j := range cfg.Args {
-			n := len(cfg.Args[j]) - 1
-			if cfg.Args[j][0] == '\'' && cfg.Args[j][n] == '\'' {
-				cfg.Args[j] = cfg.Args[j][1:n]
-			}
-		}
-	}
+	trimArgs(cfg.Args)
 
 	if cfg.DisplayName == "" {
 		DebugLogger.Println("Creating a display name..")
@@ -205,6 +267,7 @@ func checkAndConfigureCfg(cfg *SvcConfig) error {
 
 // SvcConfig is the data required run the executable as a service.
 type SvcConfig struct {
+	// Base configuration
 	Name        string
 	Desc        string
 	DisplayName string
@@ -212,60 +275,35 @@ type SvcConfig struct {
 	WorkDir     string
 	Args        []string
 	Env         []string
+
+	// Extended Configurations
+	RecoveryActions map[int]SvcRecoveryAction
 }
 
-type cerberusSvc struct {
-	log debug.Log
-	cfg SvcConfig
-}
+// RecoveryAction defines what happens if a binary exits with error
+type RecoveryAction int
 
-// Execute will be called when the service is started.
-func (c *cerberusSvc) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (svcSpecificEC bool, exitCode uint32) {
-	changes <- svc.Status{State: svc.StartPending}
-	cmd := exec.Cmd{Path: c.cfg.ExePath, Dir: c.cfg.WorkDir, Args: append([]string{c.cfg.ExePath}, c.cfg.Args...), Env: append(os.Environ(), c.cfg.Env...)}
-	if err := cmd.Start(); err != nil {
-		c.log.Error(2, fmt.Sprintf("Failed to start service: %v", err))
-		return false, 2
-	}
+const (
+	// NoAction is the default action and will stop the service on error.
+	NoAction RecoveryAction = 1 << iota
+	// RestartAction restarts the serivce according the specified settings.
+	RestartAction
+	// RunProgramAction will run the specified program.
+	RunProgramAction
 
-	// Setup signaling for the process and run it
-	done := make(chan error)
-	go func() {
-		done <- cmd.Wait()
-	}()
+	// RunAndRestartAction restarts the service and runs the specified program.
+	RunAndRestartAction = RestartAction | RunProgramAction
+)
 
-	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
-	c.log.Info(1, fmt.Sprintf("Service %v is running...", c.cfg.Name))
-
-loop:
-	for {
-		select {
-		case err := <-done:
-			if err != nil {
-				c.log.Error(3, fmt.Sprintf("Executable '%v' exited with error: %v", c.cfg.ExePath, err))
-				exitCode = 3
-			}
-			break loop
-
-		case cr := <-r:
-			switch cr.Cmd {
-			case svc.Interrogate:
-				changes <- cr.CurrentStatus
-			case svc.Shutdown, svc.Stop:
-				changes <- svc.Status{State: svc.StopPending}
-				c.log.Info(1, "Received shutdown command, shutting down...")
-				ps.KillChildProcesses(uint32(cmd.Process.Pid), true)
-				<-done
-				break loop
-			default:
-				c.log.Warning(4, fmt.Sprintf("Unexpected control sequence received: #%d", cr))
-			}
-		}
-	}
-
-	changes <- svc.Status{State: svc.Stopped}
-	c.log.Info(1, fmt.Sprintf("Service %v stopped...", c.cfg.Name))
-	return
+// SvcRecoveryAction defines what cerberus should do if a binary returns an error.
+type SvcRecoveryAction struct {
+	ExitCode    int
+	Action      RecoveryAction
+	Delay       int
+	MaxRestarts int
+	ResetAfter  time.Duration
+	Program     string
+	Arguments   []string
 }
 
 const swRegBaseKey = "SOFTWARE\\go-sharp\\cerberus\\services"
@@ -349,11 +387,20 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 		return nil, newErrorW(ErrLoadServiceCfg, "failed to read environment vars", err)
 	}
 
+	if data, _, err := key.GetBinaryValue("RecoveryActions"); err == nil {
+		dec := gob.NewDecoder(bytes.NewReader(data))
+		if err := dec.Decode(&cfg.RecoveryActions); err != nil {
+			return nil, newErrorW(ErrLoadServiceCfg, "failed to read recovery actions", err)
+		}
+	} else {
+		cfg.RecoveryActions = map[int]SvcRecoveryAction{}
+	}
+
 	return cfg, nil
 }
 
-// SaveServiceCfg saves a given configuration in the cerberus service db.
-func SaveServiceCfg(config SvcConfig) error {
+// saveServiceCfg saves a given configuration in the cerberus service db.
+func saveServiceCfg(config SvcConfig) error {
 	if config.Name == "" {
 		return newError(ErrSaveServiceCfg, "empty service name is not allowed")
 	}
@@ -391,5 +438,28 @@ func SaveServiceCfg(config SvcConfig) error {
 		return newErrorW(ErrSaveServiceCfg, "failed to set environment vars", err)
 	}
 
+	if config.RecoveryActions != nil {
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(config.RecoveryActions); err != nil {
+			return newErrorW(ErrSaveServiceCfg, "failed to serialize recovery actions", err)
+		}
+
+		if err := key.SetBinaryValue("RecoveryActions", buf.Bytes()); err != nil {
+			return newErrorW(ErrSaveServiceCfg, "failed to set recovery actions", err)
+		}
+	}
+
 	return nil
+}
+
+func trimArgs(args []string) {
+	if len(args) > 0 {
+		DebugLogger.Println("Removing leading/trailing quotes from arguments...")
+		for j := range args {
+			n := len(args[j]) - 1
+			if args[j][0] == '\'' && args[j][n] == '\'' {
+				args[j] = args[j][1:n]
+			}
+		}
+	}
 }
