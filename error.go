@@ -18,6 +18,10 @@ const (
 	ErrLoadServiceCfg
 	// ErrInstallService indicats error while installing a service.
 	ErrInstallService
+	// ErrUpdateService indicats error while updating a service.
+	ErrUpdateService
+	// ErrInvalidConfiguration indicats error while validating service configuration.
+	ErrInvalidConfiguration
 	// ErrRemoveService indicates error while removing a service.
 	ErrRemoveService
 	// ErrRunService indicates error while running a service.
@@ -27,11 +31,13 @@ const (
 )
 
 var errorMap = map[ErrorCode]string{
-	ErrSaveServiceCfg: "SaveServiceCfg",
-	ErrLoadServiceCfg: "LoadServiceCfg",
-	ErrInstallService: "InstallService",
-	ErrRemoveService:  "RemoveService",
-	ErrRunService:     "RunService",
+	ErrSaveServiceCfg:       "SaveServiceCfg",
+	ErrLoadServiceCfg:       "LoadServiceCfg",
+	ErrInstallService:       "InstallService",
+	ErrUpdateService:        "UpdateService",
+	ErrRemoveService:        "RemoveService",
+	ErrRunService:           "RunService",
+	ErrInvalidConfiguration: "Validation",
 }
 
 // Error is a cerberus specific error.
