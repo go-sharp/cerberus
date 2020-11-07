@@ -31,7 +31,7 @@ func InstallService(config SvcConfig) error {
 	DebugLogger.Println("Open connection to service control manager...")
 	manager, err := mgr.Connect()
 	if err != nil {
-		return newError(ErrInstallService, "failed to connect to service control manager: %v", err)
+		return newError(ErrSCMConnect, "failed to connect to service control manager: %v", err)
 	}
 	defer manager.Disconnect()
 
@@ -40,7 +40,7 @@ func InstallService(config SvcConfig) error {
 		return err
 	}
 	// Validate all properties
-	if err := validateConfiguration(&config); err != nil {
+	if err := validateConfiguration(manager, &config); err != nil {
 		return err
 	}
 
@@ -64,7 +64,7 @@ func InstallService(config SvcConfig) error {
 	if err := saveServiceCfg(config); err != nil {
 		s.Delete()
 		eventlog.Remove(config.Name)
-		return newErrorW(ErrSaveServiceCfg, "failed to write config", err)
+		return err
 	}
 
 	Logger.Printf("Successfully installed service %v...\n", config.Name)
@@ -76,7 +76,7 @@ func UpdateService(config SvcConfig) error {
 	DebugLogger.Println("Open connection to service control manager...")
 	manager, err := mgr.Connect()
 	if err != nil {
-		return newError(ErrUpdateService, "failed to connect to service control manager: %v", err)
+		return newError(ErrSCMConnect, "failed to connect to service control manager: %v", err)
 	}
 	defer manager.Disconnect()
 
@@ -96,13 +96,13 @@ func UpdateService(config SvcConfig) error {
 	currentSvc.WorkDir = config.WorkDir
 
 	// Validate all properties
-	if err := validateConfiguration(&config); err != nil {
+	if err := validateConfiguration(manager, &config); err != nil {
 		return err
 	}
 
 	DebugLogger.Println("Write service configuration...")
 	if err := saveServiceCfg(config); err != nil {
-		return newErrorW(ErrSaveServiceCfg, "failed to write config", err)
+		return err
 	}
 
 	Logger.Printf("Successfully updated service %v...\n", config.Name)
@@ -115,7 +115,7 @@ func RemoveService(name string) error {
 	DebugLogger.Println("Open connection to service control manager...")
 	manager, err := mgr.Connect()
 	if err != nil {
-		return newErrorW(ErrRemoveService, "failed to connect to service control manager", err)
+		return newErrorW(ErrSCMConnect, "failed to connect to service control manager", err)
 	}
 	defer manager.Disconnect()
 
@@ -199,7 +199,7 @@ func RunService(name string) error {
 	return nil
 }
 
-func validateConfiguration(cfg *SvcConfig) error {
+func validateConfiguration(m *mgr.Mgr, cfg *SvcConfig) error {
 	DebugLogger.Println("Validating configuration...")
 	if cfg.Name == "" {
 		return newError(ErrInvalidConfiguration, "service name can't be empty")
@@ -220,6 +220,25 @@ func validateConfiguration(cfg *SvcConfig) error {
 			}
 			if fi, err := os.Stat(action.Program); err != nil || fi.IsDir() {
 				return newErrorW(ErrInvalidConfiguration, "recovery action program path isn't a binary file", err)
+			}
+		}
+	}
+
+	if len(cfg.Dependencies) > 0 {
+		services, err := m.ListServices()
+		if err != nil {
+			return newErrorW(ErrGeneric, "failed to get service list", err)
+		}
+		for i := range cfg.Dependencies {
+			found := false
+			for j := range services {
+				if cfg.Dependencies[i] == services[j] {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return newError(ErrInvalidConfiguration, "couldn't find a dependency: "+cfg.Dependencies[i])
 			}
 		}
 	}
@@ -278,7 +297,25 @@ type SvcConfig struct {
 
 	// Extended Configurations
 	RecoveryActions map[int]SvcRecoveryAction
+	Dependencies    []string
+	ServiceUser     string
+	Password        *string
+	StartType       StartType
 }
+
+// StartType configures the startup type.
+type StartType uint32
+
+const (
+	// AutoStartType configures the service to startup automatically.
+	AutoStartType StartType = 2
+	// AutoDelayedStartType configures the service to startup automatically with delay.
+	AutoDelayedStartType StartType = 9999
+	// ManualStartType configures the service for manual startup.
+	ManualStartType StartType = 3
+	// DisabledStartType disables the service.
+	DisabledStartType StartType = 4
+)
 
 // RecoveryAction defines what happens if a binary exits with error
 type RecoveryAction int
@@ -348,6 +385,7 @@ func LoadServicesCfg() (svcs []*SvcConfig, err error) {
 // LoadServiceCfg loads a service configuration for a given service
 // from the cerberus service db.
 func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
+	DebugLogger.Println("Loading service configuration for " + name + "...")
 	if name == "" {
 		return nil, newError(ErrLoadServiceCfg, "empty service name is not allowed")
 	}
@@ -357,7 +395,32 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 		return nil, newError(ErrLoadServiceCfg, "couldn't find service '%v'", name)
 	}
 
-	cfg = &SvcConfig{}
+	manager, err := mgr.Connect()
+	if err != nil {
+		return nil, newErrorW(ErrSCMConnect, "failed to connect to service control manager", err)
+	}
+	defer manager.Disconnect()
+
+	svc, err := manager.OpenService(name)
+	if err != nil {
+		return nil, newErrorW(ErrSaveServiceCfg, "failed to load serivce from scm", err)
+	}
+
+	scmCfg, err := svc.Config()
+	if err != nil {
+		return nil, newErrorW(ErrGeneric, "failed to get service configuration from scm", err)
+	}
+
+	cfg = &SvcConfig{
+		ServiceUser:  scmCfg.ServiceStartName,
+		Dependencies: scmCfg.Dependencies,
+	}
+
+	if scmCfg.DelayedAutoStart && StartType(scmCfg.StartType) == AutoStartType {
+		cfg.StartType = AutoDelayedStartType
+	} else {
+		cfg.StartType = StartType(scmCfg.StartType)
+	}
 
 	if cfg.Name, _, err = key.GetStringValue("Name"); err != nil {
 		return nil, newErrorW(ErrLoadServiceCfg, "failed to read name", err)
@@ -399,10 +462,62 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 	return cfg, nil
 }
 
+func updateSCMProperties(cfg *SvcConfig) error {
+	DebugLogger.Println("Updating SCM service properties...")
+	manager, err := mgr.Connect()
+	if err != nil {
+		return newErrorW(ErrSCMConnect, "failed to connect to service control manager", err)
+	}
+	defer manager.Disconnect()
+
+	svc, err := manager.OpenService(cfg.Name)
+	if err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to load serivce from scm", err)
+	}
+
+	config, err := svc.Config()
+	if err != nil {
+		return newErrorW(ErrGeneric, "failed to get service configuration from scm", err)
+	}
+
+	if cfg.StartType == AutoDelayedStartType {
+		config.StartType = mgr.StartAutomatic
+		config.DelayedAutoStart = true
+	} else {
+		config.StartType = uint32(cfg.StartType)
+	}
+
+	config.Dependencies = cfg.Dependencies
+	if len(config.Dependencies) == 0 {
+		config.Dependencies = []string{"\x00"}
+	}
+
+	if cfg.ServiceUser == "" {
+		config.ServiceStartName = "LocalSystem"
+	} else {
+		config.ServiceStartName = cfg.ServiceUser
+	}
+
+	if cfg.Password != nil {
+		config.Password = *cfg.Password
+	}
+
+	if err := svc.UpdateConfig(config); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to update scm properties", err)
+	}
+
+	return nil
+}
+
 // saveServiceCfg saves a given configuration in the cerberus service db.
 func saveServiceCfg(config SvcConfig) error {
 	if config.Name == "" {
 		return newError(ErrSaveServiceCfg, "empty service name is not allowed")
+	}
+
+	// Save scm properties
+	if err := updateSCMProperties(&config); err != nil {
+		return err
 	}
 
 	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, swRegBaseKey+"\\"+config.Name, registry.CREATE_SUB_KEY|registry.WRITE)
