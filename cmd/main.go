@@ -95,39 +95,40 @@ func (r *ListCommand) Execute(args []string) (err error) {
 	fmt.Printf("\nCerberus installed services:\n")
 	fmt.Println(strings.Repeat("-", 80))
 
-	firstlvl := 22
-	secondlvl := firstlvl + 8
+	p := keyValuePrinter{indentSize: 5}
 	for _, s := range svcs {
-		fmt.Fprintln(os.Stdout, fill("Name:", firstlvl), s.Name)
-		fmt.Fprintln(os.Stdout, fill("Display Name:", firstlvl), s.DisplayName)
-		fmt.Fprintln(os.Stdout, fill("Description:", firstlvl), s.Desc)
-		fmt.Fprintln(os.Stdout, fill("Executable Path:", firstlvl), s.ExePath)
-		fmt.Fprintln(os.Stdout, fill("Working Directory:", firstlvl), s.WorkDir)
-		fmt.Fprintln(os.Stdout, fill("Arguments:", firstlvl), strings.Join(s.Args, " "))
-		fmt.Fprintln(os.Stdout, fill("Environment Variables:", firstlvl), strings.Join(s.Env, " "))
-		fmt.Fprintln(os.Stdout, fill("Start Type:", firstlvl), startTypeMapping[s.StartType])
-		fmt.Fprintln(os.Stdout, fill("Service User:", firstlvl), s.ServiceUser)
-		fmt.Fprintln(os.Stdout, fill("Dependencies:", firstlvl), strings.Join(s.Dependencies, " | "))
-		fmt.Fprintln(os.Stdout, fill("Recovery Actions:", firstlvl))
-
+		p.println("Name", s.Name)
+		p.println("Display Name", s.DisplayName)
+		p.println("Description", s.Desc)
+		p.println("Executable Path", s.ExePath)
+		p.println("Working Directory", s.WorkDir)
+		p.println("Arguments", strings.Join(s.Args, " "))
+		p.println("Environment Variables", strings.Join(s.Env, " "))
+		p.println("Start Type", startTypeMapping[s.StartType])
+		p.println("Service User", s.ServiceUser)
+		p.println("Dependencies", strings.Join(s.Dependencies, " | "))
+		p.println("Recovery Actions", "")
+		p.indent()
 		var actlng = len(s.RecoveryActions)
 		for _, action := range s.RecoveryActions {
-			fmt.Fprintln(os.Stdout, fill("Action:", secondlvl), mapAction(action.Action))
-			fmt.Fprintln(os.Stdout, fill("Error Code:", secondlvl), action.ExitCode)
+			p.println("Error Code", action.ExitCode)
+			p.println("Action", mapAction(action.Action))
 			if action.Action&cerberus.RestartAction == cerberus.RestartAction {
-				fmt.Fprintln(os.Stdout, fill("Delay:", secondlvl), action.Delay)
-				fmt.Fprintln(os.Stdout, fill("Max Restarts:", secondlvl), action.MaxRestarts)
-				fmt.Fprintln(os.Stdout, fill("Reset After:", secondlvl), action.ResetAfter)
+				p.println("Delay", action.Delay)
+				p.println("Max Restarts", action.MaxRestarts)
+				p.println("Reset After", action.ResetAfter)
 			}
 			if action.Action&cerberus.RunProgramAction == cerberus.RunProgramAction {
-				fmt.Fprintln(os.Stdout, fill("Program:", secondlvl), action.Program)
-				fmt.Fprintln(os.Stdout, fill("Arguments:", secondlvl), fmt.Sprintf("[%v]", concatArgs(action.Arguments)))
+				p.println("Program", action.Program)
+				p.println("Arguments", fmt.Sprintf("[%v]", concatArgs(action.Arguments)))
 			}
 			if actlng > 1 {
-				fmt.Fprintln(os.Stdout, fill("-", secondlvl))
+				p.println("-", nil)
 			}
 			actlng--
 		}
+
+		p.writeTo(os.Stdout)
 		fmt.Fprintf(os.Stdout, "%v\n", strings.Repeat("-", 80))
 	}
 
@@ -419,15 +420,6 @@ func (c funcCommand) Execute(args []string) error {
 		return c.fn(args)
 	}
 	return nil
-}
-
-func fill(s string, min int) string {
-	n := min - len(s)
-	if n < 0 {
-		return s
-	}
-
-	return strings.Repeat(" ", n) + s
 }
 
 func concatArgs(args []string) string {
