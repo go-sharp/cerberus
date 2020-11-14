@@ -28,6 +28,8 @@ const (
 	ErrRunService
 	// ErrTimeout indicates an action run into a timeout.
 	ErrTimeout
+	// ErrSCMConnect indicates a failure while connecting to the SCM.
+	ErrSCMConnect
 )
 
 var errorMap = map[ErrorCode]string{

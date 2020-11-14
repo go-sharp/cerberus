@@ -18,6 +18,13 @@ var removeCommand RemoveCommand
 var listCommand ListCommand
 var parser = flags.NewParser(nil, flags.Default)
 
+var startTypeMapping = map[cerberus.StartType]string{
+	cerberus.ManualStartType:      "manual",
+	cerberus.AutoStartType:        "autostart",
+	cerberus.AutoDelayedStartType: "delayed autostart",
+	cerberus.DisabledStartType:    "disabled",
+}
+
 func init() {
 	parser.AddCommand("version", "Show version", "Show version", CommandFunc(showVersion))
 	parser.AddCommand("list", "Show cerberus installed services", "Show cerberus installed services", &listCommand)
@@ -30,6 +37,8 @@ func init() {
 		CommandFunc(nil))
 	recCmd.AddCommand("set", "Sets a recovery action for an installed service", "Set a recovery action for an installed service", &RecoverySetCommand{})
 	recCmd.AddCommand("del", "Deletes a recovery action for an installed service", "Deletes a recovery action for an installed service", &RecoveryDelCommand{})
+
+	parser.AddCommand("edit", "Editing an installed service", "Editing an installed service", &EditCommand{})
 
 }
 
@@ -86,36 +95,40 @@ func (r *ListCommand) Execute(args []string) (err error) {
 	fmt.Printf("\nCerberus installed services:\n")
 	fmt.Println(strings.Repeat("-", 80))
 
-	firstlvl := 22
-	secondlvl := firstlvl + 8
+	p := keyValuePrinter{indentSize: 5}
 	for _, s := range svcs {
-		fmt.Fprintln(os.Stdout, fill("Name:", firstlvl), s.Name)
-		fmt.Fprintln(os.Stdout, fill("Display Name:", firstlvl), s.DisplayName)
-		fmt.Fprintln(os.Stdout, fill("Description:", firstlvl), s.Desc)
-		fmt.Fprintln(os.Stdout, fill("Executable Path:", firstlvl), s.ExePath)
-		fmt.Fprintln(os.Stdout, fill("Working Directory:", firstlvl), s.WorkDir)
-		fmt.Fprintln(os.Stdout, fill("Arguments:", firstlvl), strings.Join(s.Args, " "))
-		fmt.Fprintln(os.Stdout, fill("Environment Variables:", firstlvl), strings.Join(s.Env, " "))
-		fmt.Fprintln(os.Stdout, fill("Recovery Actions:", firstlvl))
-
+		p.println("Name", s.Name)
+		p.println("Display Name", s.DisplayName)
+		p.println("Description", s.Desc)
+		p.println("Executable Path", s.ExePath)
+		p.println("Working Directory", s.WorkDir)
+		p.println("Arguments", strings.Join(s.Args, " "))
+		p.println("Environment Variables", strings.Join(s.Env, " "))
+		p.println("Start Type", startTypeMapping[s.StartType])
+		p.println("Service User", s.ServiceUser)
+		p.println("Dependencies", strings.Join(s.Dependencies, " | "))
+		p.println("Recovery Actions", "")
+		p.indent()
 		var actlng = len(s.RecoveryActions)
 		for _, action := range s.RecoveryActions {
-			fmt.Fprintln(os.Stdout, fill("Action:", secondlvl), mapAction(action.Action))
-			fmt.Fprintln(os.Stdout, fill("Error Code:", secondlvl), action.ExitCode)
+			p.println("Error Code", action.ExitCode)
+			p.println("Action", mapAction(action.Action))
 			if action.Action&cerberus.RestartAction == cerberus.RestartAction {
-				fmt.Fprintln(os.Stdout, fill("Delay:", secondlvl), action.Delay)
-				fmt.Fprintln(os.Stdout, fill("Max Restarts:", secondlvl), action.MaxRestarts)
-				fmt.Fprintln(os.Stdout, fill("Reset After:", secondlvl), action.ResetAfter)
+				p.println("Delay", action.Delay)
+				p.println("Max Restarts", action.MaxRestarts)
+				p.println("Reset After", action.ResetAfter)
 			}
 			if action.Action&cerberus.RunProgramAction == cerberus.RunProgramAction {
-				fmt.Fprintln(os.Stdout, fill("Program:", secondlvl), action.Program)
-				fmt.Fprintln(os.Stdout, fill("Arguments:", secondlvl), fmt.Sprintf("[%v]", concatArgs(action.Arguments)))
+				p.println("Program", action.Program)
+				p.println("Arguments", fmt.Sprintf("[%v]", concatArgs(action.Arguments)))
 			}
 			if actlng > 1 {
-				fmt.Fprintln(os.Stdout, fill("-", secondlvl))
+				p.println("-", nil)
 			}
 			actlng--
 		}
+
+		p.writeTo(os.Stdout)
 		fmt.Fprintf(os.Stdout, "%v\n", strings.Repeat("-", 80))
 	}
 
@@ -201,6 +214,109 @@ func (r *RunCommand) Execute(args []string) (err error) {
 	return nil
 }
 
+// EditCommand runs the configured service directly.
+type EditCommand struct {
+	RootCommand
+	WorkDir      *string   `long:"workdir" short:"w" description:"Working directory of the executable.."`
+	DisplayName  *string   `long:"display-name" short:"i" description:"Display name of the service."`
+	Desc         *string   `long:"desc" short:"d" description:"Description of the service"`
+	Arguments    *[]string `long:"arg" short:"a" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
+	Env          *[]string `long:"env" short:"e" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
+	Dependencies *[]string `long:"dependencies" short:"n" description:"Services on which this service depend on. (ex. -a serviceA -a serviceB)"`
+	ServiceUser  *string   `long:"user" short:"u" description:"User under which this service will run."`
+	Password     *string   `long:"password" short:"p" description:"Password for the specified service user."`
+	StartType    *string   `long:"start-type" short:"s" description:"Service start type. One of [manual|autostart|delayed|disabled]"`
+	// Flags
+	NoDependencies *bool `long:"no-deps" description:"Remove all dependencies for this service."`
+	NoArgs         *bool `long:"no-args" description:"Remove all arguments for this service."`
+	NoEnv          *bool `long:"no-env" description:"Remove all environment variables for this service."`
+	UseLocalSystem *bool `long:"use-system-account" description:"Use local system account to run this service."`
+	Args           struct {
+		Name string `positional-arg-name:"SERVICE_NAME" description:"Name of the service to edit."`
+	} `positional-args:"yes" required:"1"`
+}
+
+// Execute will run the service handler.
+func (e *EditCommand) Execute(args []string) (err error) {
+	if err := e.RootCommand.Execute(args); err != nil {
+		cerberus.Logger.Fatalln(err)
+	}
+
+	svc, err := cerberus.LoadServiceCfg(e.Args.Name)
+	if err != nil {
+		cerberus.Logger.Fatalln(err)
+	}
+
+	if e.WorkDir != nil && *e.WorkDir != "" {
+		svc.WorkDir = *e.WorkDir
+	}
+
+	if e.DisplayName != nil {
+		svc.DisplayName = *e.DisplayName
+	}
+
+	if e.Desc != nil {
+		svc.Desc = *e.Desc
+	}
+
+	if e.Arguments != nil {
+		svc.Args = *e.Arguments
+	}
+
+	if e.Env != nil {
+		svc.Env = *e.Env
+	}
+
+	if e.Dependencies != nil {
+		svc.Dependencies = *e.Dependencies
+	}
+
+	if e.ServiceUser != nil {
+		svc.ServiceUser = *e.ServiceUser
+	}
+
+	if e.Password != nil {
+		svc.Password = e.Password
+	}
+
+	if e.StartType != nil {
+		switch *e.StartType {
+		case "manual":
+			svc.StartType = cerberus.ManualStartType
+		case "autostart":
+			svc.StartType = cerberus.AutoStartType
+		case "delayed":
+			svc.StartType = cerberus.AutoDelayedStartType
+		case "disabled":
+			svc.StartType = cerberus.DisabledStartType
+		default:
+			cerberus.Logger.Fatalln("Invalid start type passed: one of (manual|autostart|delayed|disabled) is required.")
+		}
+	}
+
+	if e.NoArgs != nil && *e.NoArgs {
+		svc.Args = []string{}
+	}
+
+	if e.NoEnv != nil && *e.NoEnv {
+		svc.Env = []string{}
+	}
+
+	if e.NoDependencies != nil && *e.NoDependencies {
+		svc.Dependencies = []string{}
+	}
+
+	if e.UseLocalSystem != nil && *e.UseLocalSystem {
+		svc.ServiceUser = "LocalSystem"
+	}
+
+	if err := cerberus.UpdateService(*svc); err != nil {
+		cerberus.Logger.Fatalln(err)
+	}
+
+	return nil
+}
+
 // RecoveryDelCommand delete a recovery action for an installed service..
 type RecoveryDelCommand struct {
 	RootCommand
@@ -237,7 +353,7 @@ func (r *RecoveryDelCommand) Execute(args []string) (err error) {
 type RecoverySetCommand struct {
 	RootCommand
 	ExitCode    int    `long:"exit-code" short:"e" description:"Exit code to handle by this action." required:"yes"`
-	Action      string `long:"action" short:"a" description:"Action to take if an error occured." choice:"run-restart" choice:"none" choice:"restart" choice:"run" required:"yes"`
+	Action      string `long:"action" short:"a" description:"Action to take if an error occured. One of [run-restart|none|restart|run]" required:"yes"`
 	Delay       int    `long:"delay" short:"d" description:"Delay restart of the program in seconds." default:"0"`
 	MaxRestarts int    `long:"max-restart" short:"r" description:"Maximum restarts of the service within the specified time span. Zero means unlimited restarts." default:"0"`
 	ResetAfter  int    `long:"reset-timer" short:"c" description:"Specify the duration in seconds after which the restart counter will be cleared." default:"0"`
@@ -304,15 +420,6 @@ func (c funcCommand) Execute(args []string) error {
 		return c.fn(args)
 	}
 	return nil
-}
-
-func fill(s string, min int) string {
-	n := min - len(s)
-	if n < 0 {
-		return s
-	}
-
-	return strings.Repeat(" ", n) + s
 }
 
 func concatArgs(args []string) string {
