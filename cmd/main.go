@@ -74,6 +74,7 @@ func (r *RootCommand) Execute(args []string) (err error) {
 // ListCommand shows all cerberus installed services.
 type ListCommand struct {
 	RootCommand
+	Query string `long:"filter" short:"f" description:"Only show services whose name contains the filter word."`
 }
 
 // Execute will list all with cerberus installed services. The args parameter is not used
@@ -97,35 +98,52 @@ func (r *ListCommand) Execute(args []string) (err error) {
 
 	p := keyValuePrinter{indentSize: 5}
 	for _, s := range svcs {
+		if r.Query != "" {
+			if !strings.Contains(strings.ToLower(s.Name), strings.ToLower(r.Query)) {
+				continue
+			}
+		}
+
 		p.println("Name", s.Name)
 		p.println("Display Name", s.DisplayName)
 		p.println("Description", s.Desc)
 		p.println("Executable Path", s.ExePath)
 		p.println("Working Directory", s.WorkDir)
-		p.println("Arguments", strings.Join(s.Args, " "))
-		p.println("Environment Variables", strings.Join(s.Env, " "))
+		if len(s.Args) > 0 {
+			p.println("Arguments", strings.Join(s.Args, " "))
+		}
+		if len(s.Env) > 0 {
+			p.println("Environment Variables", strings.Join(s.Env, " "))
+		}
 		p.println("Start Type", startTypeMapping[s.StartType])
+		if s.StopSignal != cerberus.NoSignal {
+			p.println("Stop Signal", s.StopSignal)
+		}
 		p.println("Service User", s.ServiceUser)
-		p.println("Dependencies", strings.Join(s.Dependencies, " | "))
-		p.println("Recovery Actions", "")
-		p.indent()
+		if len(s.Dependencies) > 0 {
+			p.println("Dependencies", strings.Join(s.Dependencies, " | "))
+		}
 		var actlng = len(s.RecoveryActions)
-		for _, action := range s.RecoveryActions {
-			p.println("Error Code", action.ExitCode)
-			p.println("Action", mapAction(action.Action))
-			if action.Action&cerberus.RestartAction == cerberus.RestartAction {
-				p.println("Delay", action.Delay)
-				p.println("Max Restarts", action.MaxRestarts)
-				p.println("Reset After", action.ResetAfter)
+		if actlng > 0 {
+			p.println("Recovery Actions", "")
+			p.indent()
+			for _, action := range s.RecoveryActions {
+				p.println("Error Code", action.ExitCode)
+				p.println("Action", mapAction(action.Action))
+				if action.Action&cerberus.RestartAction == cerberus.RestartAction {
+					p.println("Delay", action.Delay)
+					p.println("Max Restarts", action.MaxRestarts)
+					p.println("Reset After", action.ResetAfter)
+				}
+				if action.Action&cerberus.RunProgramAction == cerberus.RunProgramAction {
+					p.println("Program", action.Program)
+					p.println("Arguments", fmt.Sprintf("[%v]", concatArgs(action.Arguments)))
+				}
+				if actlng > 1 {
+					p.println("-", nil)
+				}
+				actlng--
 			}
-			if action.Action&cerberus.RunProgramAction == cerberus.RunProgramAction {
-				p.println("Program", action.Program)
-				p.println("Arguments", fmt.Sprintf("[%v]", concatArgs(action.Arguments)))
-			}
-			if actlng > 1 {
-				p.println("-", nil)
-			}
-			actlng--
 		}
 
 		p.writeTo(os.Stdout)
@@ -144,7 +162,7 @@ type InstallCommand struct {
 	DisplayName string   `long:"display-name" short:"i" description:"Display name of the service, if not specified name of the executable is used."`
 	Desc        string   `long:"desc" short:"d" description:"Description of the service"`
 	Args        []string `long:"arg" short:"a" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
-	Env         []string `long:"env" short:"e" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
+	Env         []string `long:"env" short:"e" description:"Environment variables to set for the executable. (ex. -e \"TERM=bash\" -e \"EDITOR=none\")"`
 }
 
 // Execute will install a binary as service. The args parameter is not used
@@ -221,12 +239,16 @@ type EditCommand struct {
 	DisplayName  *string   `long:"display-name" short:"i" description:"Display name of the service."`
 	Desc         *string   `long:"desc" short:"d" description:"Description of the service"`
 	Arguments    *[]string `long:"arg" short:"a" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
-	Env          *[]string `long:"env" short:"e" description:"Arguments to pass to the executable in the same order as specified. (ex. -a \"-la\" -a \"123\")"`
+	Env          *[]string `long:"env" short:"e" description:"Environment variables to set for the executable. (ex. -e \"TERM=bash\" -e \"EDITOR=none\")"`
 	Dependencies *[]string `long:"dependencies" short:"n" description:"Services on which this service depend on. (ex. -a serviceA -a serviceB)"`
 	ServiceUser  *string   `long:"user" short:"u" description:"User under which this service will run."`
 	Password     *string   `long:"password" short:"p" description:"Password for the specified service user."`
 	StartType    *string   `long:"start-type" short:"s" description:"Service start type. One of [manual|autostart|delayed|disabled]"`
 	// Flags
+	SignalCtrlC    *bool `long:"signal-ctrlc" description:"Send Ctrl-C to process if service has to stop."`
+	SignalWmQuit   *bool `long:"signal-wmquit" description:"Send WM_QUIT to process if service has to stop."`
+	SignalWmClose  *bool `long:"signal-wmclose" description:"Send WM_CLOSE to process if service has to stop."`
+	NoSignal       *bool `long:"no-signal" description:"Restore default behaviour and doesn't send any signals."`
 	NoDependencies *bool `long:"no-deps" description:"Remove all dependencies for this service."`
 	NoArgs         *bool `long:"no-args" description:"Remove all arguments for this service."`
 	NoEnv          *bool `long:"no-env" description:"Remove all environment variables for this service."`
@@ -292,6 +314,22 @@ func (e *EditCommand) Execute(args []string) (err error) {
 		default:
 			cerberus.Logger.Fatalln("Invalid start type passed: one of (manual|autostart|delayed|disabled) is required.")
 		}
+	}
+
+	if e.NoSignal != nil && *e.NoSignal {
+		svc.StopSignal = cerberus.NoSignal
+	}
+
+	if e.SignalCtrlC != nil && *e.SignalCtrlC {
+		svc.StopSignal = svc.StopSignal | cerberus.CtrlCSignal
+	}
+
+	if e.SignalWmClose != nil && *e.SignalWmClose {
+		svc.StopSignal = svc.StopSignal | cerberus.WmCloseSignal
+	}
+
+	if e.SignalWmQuit != nil && *e.SignalWmQuit {
+		svc.StopSignal = svc.StopSignal | cerberus.WmQuitSignal
 	}
 
 	if e.NoArgs != nil && *e.NoArgs {

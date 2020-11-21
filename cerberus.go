@@ -281,6 +281,7 @@ func initConfiguration(cfg *SvcConfig) error {
 		cfg.WorkDir = filepath.Dir(cfg.ExePath)
 	}
 
+	cfg.StartType = ManualStartType
 	return nil
 }
 
@@ -301,6 +302,7 @@ type SvcConfig struct {
 	ServiceUser     string
 	Password        *string
 	StartType       StartType
+	StopSignal      StopSignal
 }
 
 // StartType configures the startup type.
@@ -341,6 +343,39 @@ type SvcRecoveryAction struct {
 	ResetAfter  time.Duration
 	Program     string
 	Arguments   []string
+}
+
+// StopSignal specifies a signal to send to a process
+// if the service has to stop.
+type StopSignal int
+
+// Signals to send to a process to gracefully terminate a process.
+// WmQuit and WmClose signal works only for application with a window.
+const (
+	CtrlCSignal StopSignal = 1 << iota
+	WmQuitSignal
+	WmCloseSignal
+
+	NoSignal StopSignal = 0
+)
+
+func (s StopSignal) String() string {
+	if s == NoSignal {
+		return "NoSignal"
+	}
+
+	var strs []string
+	if s&CtrlCSignal == CtrlCSignal {
+		strs = append(strs, "Ctrl-C")
+	}
+	if s&WmCloseSignal == WmCloseSignal {
+		strs = append(strs, "WM_CLOSE")
+	}
+	if s&WmQuitSignal == WmQuitSignal {
+		strs = append(strs, "WM_QUIT")
+	}
+
+	return strings.Join(strs, " | ")
 }
 
 const swRegBaseKey = "SOFTWARE\\go-sharp\\cerberus\\services"
@@ -450,6 +485,9 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 		return nil, newErrorW(ErrLoadServiceCfg, "failed to read environment vars", err)
 	}
 
+	signal, _, _ := key.GetIntegerValue("StopSignal")
+	cfg.StopSignal = StopSignal(signal)
+
 	if data, _, err := key.GetBinaryValue("RecoveryActions"); err == nil {
 		dec := gob.NewDecoder(bytes.NewReader(data))
 		if err := dec.Decode(&cfg.RecoveryActions); err != nil {
@@ -502,6 +540,9 @@ func updateSCMProperties(cfg *SvcConfig) error {
 		config.Password = *cfg.Password
 	}
 
+	config.Description = cfg.Desc
+	config.DisplayName = cfg.DisplayName
+
 	if err := svc.UpdateConfig(config); err != nil {
 		return newErrorW(ErrSaveServiceCfg, "failed to update scm properties", err)
 	}
@@ -551,6 +592,10 @@ func saveServiceCfg(config SvcConfig) error {
 
 	if err := key.SetStringsValue("Env", config.Env); err != nil {
 		return newErrorW(ErrSaveServiceCfg, "failed to set environment vars", err)
+	}
+
+	if err := key.SetDWordValue("StopSignal", uint32(config.StopSignal)); err != nil {
+		return newErrorW(ErrSaveServiceCfg, "failed to set stop signal", err)
 	}
 
 	if config.RecoveryActions != nil {
