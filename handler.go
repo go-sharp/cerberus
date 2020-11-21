@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/go-sharp/windows/pkg/signal"
+
 	"github.com/go-sharp/windows/pkg/ps"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
@@ -82,8 +84,7 @@ loop:
 			case svc.Shutdown, svc.Stop:
 				changes <- svc.Status{State: svc.StopPending}
 				c.log.Info(1, "Received shutdown command, shutting down...")
-				ps.KillChildProcesses(uint32(c.cmd.Process.Pid), true)
-				<-c.done
+				c.shutdown(changes)
 				break loop
 			default:
 				c.log.Warning(4, fmt.Sprintf("Unexpected control sequence received: #%d", cr))
@@ -94,6 +95,41 @@ loop:
 	changes <- svc.Status{State: svc.Stopped}
 	c.log.Info(1, fmt.Sprintf("Service %v stopped...", c.cfg.Name))
 	return
+}
+
+func (c *cerberusSvc) shutdown(ch chan<- svc.Status) {
+	sig := c.cfg.StopSignal
+	if sig > NoSignal {
+		// Sending WM_QUIT if configured
+		if sig&WmQuitSignal == WmQuitSignal {
+			if err := signal.SendSignal(uint32(c.cmd.Process.Pid), signal.WmQuit); err != nil {
+				c.log.Warning(1, fmt.Sprintf("Failed to send WM_QUIT signal: %v", err))
+			}
+		}
+		// Sending WM_CLOSE if configured
+		if sig&WmCloseSignal == WmCloseSignal {
+			if err := signal.SendSignal(uint32(c.cmd.Process.Pid), signal.WmClose); err != nil {
+				c.log.Warning(1, fmt.Sprintf("Failed to send WM_QUIT signal: %v", err))
+			}
+		}
+
+		// Sending Ctrl-C if configured
+		if sig&CtrlCSignal == CtrlCSignal {
+			if err := signal.SendCtrlEvent(uint32(c.cmd.Process.Pid), signal.CtrlCEvent); err != nil {
+				c.log.Warning(1, fmt.Sprintf("Failed to send Ctrl-C signal: %v", err))
+			}
+		}
+
+		// If the process doesn't stop within 30 seconds we will kill the process.
+		select {
+		case <-time.After(time.Second * 30):
+		case <-c.done:
+			return
+		}
+	}
+
+	ps.KillChildProcesses(uint32(c.cmd.Process.Pid), true)
+	<-c.done
 }
 
 func (c *cerberusSvc) handleRecovery(action SvcRecoveryAction) recoveryHandlerStatus {
