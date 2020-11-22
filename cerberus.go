@@ -35,7 +35,7 @@ func InstallService(config SvcConfig) error {
 	}
 	defer manager.Disconnect()
 
-	// Ensure all required properties are initalized.
+	// Ensure all required properties are initialized.
 	if err := initConfiguration(&config); err != nil {
 		return err
 	}
@@ -470,7 +470,7 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 	}
 
 	if cfg.ExePath, _, err = key.GetStringValue("ExePath"); err != nil {
-		return nil, newErrorW(ErrLoadServiceCfg, "failed to read exectuable path", err)
+		return nil, newErrorW(ErrLoadServiceCfg, "failed to read executable path", err)
 	}
 
 	if cfg.WorkDir, _, err = key.GetStringValue("WorkDir"); err != nil {
@@ -579,7 +579,7 @@ func saveServiceCfg(config SvcConfig) error {
 	}
 
 	if err := key.SetStringValue("ExePath", config.ExePath); err != nil {
-		return newErrorW(ErrSaveServiceCfg, "failed to set exectuable path", err)
+		return newErrorW(ErrSaveServiceCfg, "failed to set executable path", err)
 	}
 
 	if err := key.SetStringValue("WorkDir", config.WorkDir); err != nil {

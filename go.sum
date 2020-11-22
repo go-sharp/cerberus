@@ -1,7 +1,5 @@
 github.com/go-sharp/windows/pkg/ps v0.0.0-20200229215322-4138d40ba568 h1:0XH4WcQFEiriSvjofG1BwNxrpfyaabHdVU01Nbg0eAI=
 github.com/go-sharp/windows/pkg/ps v0.0.0-20200229215322-4138d40ba568/go.mod h1:yBfrDUNClUNxcnS3nbGr0Lo043JCsp8LtIVKccZU4/g=
-github.com/go-sharp/windows/pkg/signal v0.0.0-20201115155311-b7bc0c0d83d6 h1:+XiKqEkXBswaX45Vwigxdpmj773n+0I6C4TRuK2ntp0=
-github.com/go-sharp/windows/pkg/signal v0.0.0-20201115155311-b7bc0c0d83d6/go.mod h1:lu6KeSxMp37KJ3pq0Q0Olxo4IpoUvn0A/hCBNTFcC0I=
 github.com/go-sharp/windows/pkg/signal v0.0.0-20201121193715-053fc54be48f h1:PrxGu3UV5LNshGSP60eRMyhMe8t+CiCT1tE7LjwRZOc=
 github.com/go-sharp/windows/pkg/signal v0.0.0-20201121193715-053fc54be48f/go.mod h1:lu6KeSxMp37KJ3pq0Q0Olxo4IpoUvn0A/hCBNTFcC0I=
 github.com/jessevdk/go-flags v1.4.0 h1:4IU2WS7AumrZ/40jfhf4QVDMsQwqA7VEHozFRrGARJA=

@@ -1,3 +1,5 @@
+//go:generate goversioninfo -icon=cerberus.ico
+
 package main
 
 import (
@@ -10,7 +12,7 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
-const version = "2.1.0"
+var version = "0.0.1-dev"
 
 var installCommand InstallCommand
 var runCommand RunCommand
@@ -52,7 +54,7 @@ func main() {
 }
 
 func showVersion(args []string) error {
-	fmt.Println("Cerberus: Version ", version)
+	fmt.Println("Cerberus: ", version)
 	return nil
 }
 
@@ -391,14 +393,14 @@ func (r *RecoveryDelCommand) Execute(args []string) (err error) {
 type RecoverySetCommand struct {
 	RootCommand
 	ExitCode    int    `long:"exit-code" short:"e" description:"Exit code to handle by this action." required:"yes"`
-	Action      string `long:"action" short:"a" description:"Action to take if an error occured. One of [run-restart|none|restart|run]" required:"yes"`
+	Action      string `long:"action" short:"a" description:"Action to take if an error occurred. One of [run-restart|none|restart|run]" required:"yes"`
 	Delay       int    `long:"delay" short:"d" description:"Delay restart of the program in seconds." default:"0"`
 	MaxRestarts int    `long:"max-restart" short:"r" description:"Maximum restarts of the service within the specified time span. Zero means unlimited restarts." default:"0"`
 	ResetAfter  int    `long:"reset-timer" short:"c" description:"Specify the duration in seconds after which the restart counter will be cleared." default:"0"`
-	Program     string `long:"exec" short:"x" description:"Specify the program to run if an error occured."`
+	Program     string `long:"exec" short:"x" description:"Specify the program to run if an error occurred."`
 	Args        struct {
 		Name      string   `positional-arg-name:"SERVICE_NAME" description:"Name of the service to set a recovery action."`
-		Arguments []string `positional-arg-name:"ARGUMENTS" description:"Arguments for the program to run if an error occured. Use '--' after SERVICE_NAME to specify arguments starting with '-'."`
+		Arguments []string `positional-arg-name:"ARGUMENTS" description:"Arguments for the program to run if an error occurred. Use '--' after SERVICE_NAME to specify arguments starting with '-'."`
 	} `positional-args:"yes" required:"1"`
 }
 

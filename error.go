@@ -16,11 +16,11 @@ const (
 	ErrSaveServiceCfg
 	// ErrLoadServiceCfg indicates error while loading the service configuration.
 	ErrLoadServiceCfg
-	// ErrInstallService indicats error while installing a service.
+	// ErrInstallService indicates error while installing a service.
 	ErrInstallService
-	// ErrUpdateService indicats error while updating a service.
+	// ErrUpdateService indicates error while updating a service.
 	ErrUpdateService
-	// ErrInvalidConfiguration indicats error while validating service configuration.
+	// ErrInvalidConfiguration indicates error while validating service configuration.
 	ErrInvalidConfiguration
 	// ErrRemoveService indicates error while removing a service.
 	ErrRemoveService
