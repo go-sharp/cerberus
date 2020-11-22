@@ -72,7 +72,7 @@ loop:
 					}
 				}
 				c.log.Error(3, fmt.Sprintf("Service %v unexpectedly stopped...", c.cfg.Name))
-				// We return here so the SCM knows that an error occured
+				// We return here so the SCM knows that an error occurred
 				return false, 3
 			}
 			break loop
