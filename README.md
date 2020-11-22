@@ -1,4 +1,5 @@
 # Cerberus
+[![Go Report Card](https://goreportcard.com/badge/github.com/go-sharp/cerberus?id=2)](https://goreportcard.com/report/github.com/go-sharp/cerberus)
  [![GoDoc](https://godoc.org/github.com/go-sharp/cerberus?status.svg)](https://godoc.org/github.com/go-sharp/cerberus)  
 Cerberus is a Windows service helper program inspired by [NSSM](https://nssm.cc/).
 It can be used to create and manage Windows services for ordinary binaries.
