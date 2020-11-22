@@ -172,7 +172,7 @@ func RunService(name string) error {
 	}
 
 	DebugLogger.Println("Loading service configuration...")
-	svcCfg, err := LoadServiceCfg(name)
+	svcCfg, err := loadSvcCfgRegistry(name)
 	if err != nil {
 		return err
 	}
@@ -190,6 +190,7 @@ func RunService(name string) error {
 	}
 	defer cerb.log.Close()
 
+	DebugLogger.Println(fmt.Sprintf("Starting service %v ...", svcCfg.Name))
 	cerb.log.Info(1, fmt.Sprintf("Starting service %v ...", svcCfg.Name))
 	if err := run(svcCfg.Name, &cerb); err != nil {
 		cerb.log.Error(5, fmt.Sprintf("Failed to run service: %v", err))
@@ -298,11 +299,13 @@ type SvcConfig struct {
 
 	// Extended Configurations
 	RecoveryActions map[int]SvcRecoveryAction
-	Dependencies    []string
-	ServiceUser     string
-	Password        *string
-	StartType       StartType
 	StopSignal      StopSignal
+
+	// SCM Properties (Admin rights require to load this properties)
+	Dependencies []string
+	ServiceUser  string
+	Password     *string
+	StartType    StartType
 }
 
 // StartType configures the startup type.
@@ -425,9 +428,9 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 		return nil, newError(ErrLoadServiceCfg, "empty service name is not allowed")
 	}
 
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, swRegBaseKey+"\\"+name, registry.QUERY_VALUE)
+	cfg, err = loadSvcCfgRegistry(name)
 	if err != nil {
-		return nil, newError(ErrLoadServiceCfg, "couldn't find service '%v'", name)
+		return nil, err
 	}
 
 	manager, err := mgr.Connect()
@@ -446,15 +449,23 @@ func LoadServiceCfg(name string) (cfg *SvcConfig, err error) {
 		return nil, newErrorW(ErrGeneric, "failed to get service configuration from scm", err)
 	}
 
-	cfg = &SvcConfig{
-		ServiceUser:  scmCfg.ServiceStartName,
-		Dependencies: scmCfg.Dependencies,
-	}
+	cfg.ServiceUser = scmCfg.ServiceStartName
+	cfg.Dependencies = scmCfg.Dependencies
 
 	if scmCfg.DelayedAutoStart && StartType(scmCfg.StartType) == AutoStartType {
 		cfg.StartType = AutoDelayedStartType
 	} else {
 		cfg.StartType = StartType(scmCfg.StartType)
+	}
+
+	return cfg, nil
+}
+
+func loadSvcCfgRegistry(name string) (cfg *SvcConfig, err error) {
+	cfg = &SvcConfig{}
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, swRegBaseKey+"\\"+name, registry.QUERY_VALUE)
+	if err != nil {
+		return nil, newError(ErrLoadServiceCfg, "couldn't find service '%v'", name)
 	}
 
 	if cfg.Name, _, err = key.GetStringValue("Name"); err != nil {
