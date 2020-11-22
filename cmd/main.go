@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -27,6 +29,8 @@ var startTypeMapping = map[cerberus.StartType]string{
 	cerberus.DisabledStartType:    "disabled",
 }
 
+var writer io.Writer = os.Stdout
+
 func init() {
 	parser.AddCommand("version", "Show version", "Show version", CommandFunc(showVersion))
 	parser.AddCommand("list", "Show cerberus installed services", "Show cerberus installed services", &listCommand)
@@ -42,10 +46,19 @@ func init() {
 
 	parser.AddCommand("edit", "Editing an installed service", "Editing an installed service", &EditCommand{})
 
+	// Enable logging to a file, required to debug service errors while executing the run command.
+	logpath := os.Getenv("CERBERUS_LOGGER")
+	if logpath != "" {
+		fs, err := os.OpenFile(logpath, os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			cerberus.Logger.Fatalln(err)
+		}
+		writer = io.MultiWriter(fs, os.Stdout)
+		cerberus.Logger = log.New(writer, "Cerberus: ", 0)
+	}
 }
 
 func main() {
-
 	_, err := parser.Parse()
 	if err != nil {
 		os.Exit(1)
@@ -66,8 +79,9 @@ type RootCommand struct {
 // Execute will setup root command properly. The args parameter is not used
 // and is only to fullfil the go-flags commander interface.
 func (r *RootCommand) Execute(args []string) (err error) {
-	if r.Verbose {
-		cerberus.DebugLogger.SetOutput(os.Stdout)
+	_, verbose := os.LookupEnv("CERBERUS_VERBOSE")
+	if r.Verbose || verbose {
+		cerberus.DebugLogger.SetOutput(writer)
 	}
 
 	return nil
@@ -84,10 +98,6 @@ type ListCommand struct {
 func (r *ListCommand) Execute(args []string) (err error) {
 	if err := r.RootCommand.Execute(args); err != nil {
 		cerberus.Logger.Fatalln(err)
-	}
-
-	if r.Verbose {
-		cerberus.DebugLogger.SetOutput(os.Stdout)
 	}
 
 	svcs, err := cerberus.LoadServicesCfg()
@@ -223,6 +233,13 @@ type RunCommand struct {
 
 // Execute will run the service handler.
 func (r *RunCommand) Execute(args []string) (err error) {
+	// If we run as a service, we need to catch panics.
+	defer func() {
+		if r := recover(); r != nil {
+			cerberus.Logger.Fatalln(r)
+		}
+	}()
+
 	if err := r.RootCommand.Execute(args); err != nil {
 		cerberus.Logger.Fatalln(err)
 	}
