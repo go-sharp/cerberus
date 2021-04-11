@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-sharp/cerberus"
+	"github.com/go-sharp/cerberus/v2"
 	"github.com/jessevdk/go-flags"
 )
 
@@ -366,7 +366,7 @@ func (e *EditCommand) Execute(args []string) (err error) {
 	if e.UseLocalSystem != nil && *e.UseLocalSystem {
 		svc.ServiceUser = "LocalSystem"
 	}
-
+	fmt.Printf("%+v", *svc)
 	if err := cerberus.UpdateService(*svc); err != nil {
 		cerberus.Logger.Fatalln(err)
 	}
